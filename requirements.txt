@@ -1,0 +1,8 @@
+torch
+transformers
+sentence-transformers
+chromadb
+rank-bm25
+PyMuPDF
+accelerate
+unsloth
