@@ -250,7 +250,17 @@ class GemmaGenerator:
         context_str = "\n\n---\n\n".join(ctx_texts)
         user_prompt = f"Bağlam:\n{context_str}\n\nSoru: {question}"
 
-        messages = [{"role": "user", "content": f"{self.SYSTEM_PROMPT}\n\n{user_prompt}"}]
+        messages = [
+    {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": f"{self.SYSTEM_PROMPT}\n\n{user_prompt}"
+            }
+        ]
+    }
+]
 
         inputs = self.tokenizer.apply_chat_template(
             messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"

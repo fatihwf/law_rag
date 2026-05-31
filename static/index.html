@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Law RAG - Hukuk Asistanı</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="dark-mode">
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar glass-panel">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <i class="fa-solid fa-scale-balanced"></i>
+                    <h1>Law RAG</h1>
+                </div>
+                <p class="subtitle">AI Hukuk Asistanı</p>
+            </div>
+
+            <div class="sidebar-section status-section">
+                <h3><i class="fa-solid fa-database"></i> Veritabanı Durumu</h3>
+                <div class="status-card">
+                    <div class="status-icon"><i class="fa-solid fa-server"></i></div>
+                    <div class="status-info">
+                        <span class="status-label">İndekslenmiş Parça</span>
+                        <span class="status-value" id="db-count">Yükleniyor...</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-section upload-section">
+                <h3><i class="fa-solid fa-file-arrow-up"></i> Belge Yükle</h3>
+                <form id="upload-form" class="upload-area">
+                    <input type="file" id="file-input" name="file" accept=".pdf,.txt" hidden>
+                    <label for="file-input" class="upload-label">
+                        <i class="fa-solid fa-cloud-arrow-up"></i>
+                        <span>Dosya Seç (PDF / TXT)</span>
+                    </label>
+                    <div id="selected-file-name" class="file-name"></div>
+                    <button type="submit" class="btn-primary" id="upload-btn" disabled>
+                        <span>Yükle ve İndeksle</span>
+                        <i class="fa-solid fa-arrow-right"></i>
+                    </button>
+                </form>
+                <div id="upload-status" class="status-message"></div>
+            </div>
+
+            <div class="sidebar-section settings-section">
+                <h3><i class="fa-solid fa-sliders"></i> Ayarlar</h3>
+                <div class="setting-item">
+                    <label for="top-k">Top-K (Döndürülecek Belge): <span id="top-k-val">5</span></label>
+                    <input type="range" id="top-k" min="1" max="15" value="5">
+                </div>
+                <div class="setting-item">
+                    <label for="pool">Pool (Arama Havuzu): <span id="pool-val">20</span></label>
+                    <input type="range" id="pool" min="5" max="100" value="20">
+                </div>
+            </div>
+            
+            <div class="sidebar-footer">
+                <button id="clear-chat" class="btn-secondary">
+                    <i class="fa-solid fa-trash"></i> Sohbeti Temizle
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <header class="chat-header glass-panel">
+                <h2>Sohbet</h2>
+                <div class="theme-toggle" id="theme-toggle" title="Tema Değiştir">
+                    <i class="fa-solid fa-moon"></i>
+                </div>
+            </header>
+
+            <div class="chat-messages" id="chat-messages">
+                <div class="message system-message">
+                    <div class="avatar"><i class="fa-solid fa-robot"></i></div>
+                    <div class="message-content">
+                        <p>Merhaba! Ben hukuk asistanınızım. Veritabanındaki belgelere dayanarak sorularınızı yanıtlayabilirim.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-input-container glass-panel">
+                <form id="chat-form">
+                    <textarea id="chat-input" placeholder="Hukuki sorunuzu buraya yazın..." rows="1"></textarea>
+                    <button type="submit" id="send-btn" class="btn-send">
+                        <i class="fa-solid fa-paper-plane"></i>
+                    </button>
+                </form>
+                <div class="chat-actions">
+                    <button type="button" id="batch-btn" class="btn-primary batch-trigger-btn">
+                        <i class="fa-solid fa-layer-group"></i> Toplu Soru Sor
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="overlay hidden">
+        <div class="spinner"></div>
+        <p>Yanıt üretiliyor...</p>
+    </div>
+
+    <!-- Batch Questions Modal -->
+    <div id="batch-modal" class="overlay hidden">
+        <div class="modal glass-panel">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-layer-group"></i> Toplu Soru Sor</h3>
+                <button type="button" id="close-batch-modal" class="btn-icon"><i class="fa-solid fa-times"></i></button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-desc">Sormak istediğiniz soruları ayrı ayrı alanlara girin.</p>
+                <div id="batch-questions-container">
+                    <div class="batch-q-row">
+                        <span class="q-number">1.</span>
+                        <input type="text" class="batch-q-input" placeholder="Birinci sorunuz...">
+                        <button type="button" class="btn-icon delete-q-btn" disabled><i class="fa-solid fa-trash"></i></button>
+                    </div>
+                </div>
+                <button type="button" id="add-question-btn" class="btn-secondary" style="width: auto; margin: 0 auto; display: block;">
+                    <i class="fa-solid fa-plus"></i> Yeni Soru Ekle
+                </button>
+            </div>
+            <div class="modal-footer">
+                <button type="button" id="start-batch-btn" class="btn-primary" style="width: 100%;">
+                    <i class="fa-solid fa-play"></i> Sırayla Yanıtla
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
