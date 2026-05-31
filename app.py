@@ -59,12 +59,16 @@ def main():
         retriever, generator = load_models()
         
     # Sohbet arayüzü durumu
-    if "messages" not in st.session_state:
+    if "messages" not in st.session_state or not isinstance(st.session_state.messages, list):
+        st.session_state.messages = []
+        
+    # Eğer messages listesi içindeki öğeler dict değilse (örn. eski bir oturumdan string kalmışsa) temizle
+    if any(not isinstance(msg, dict) for msg in st.session_state.messages):
         st.session_state.messages = []
         
     for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+        with st.chat_message(msg.get("role", "unknown")):
+            st.markdown(msg.get("content", ""))
             
     if prompt := st.chat_input("Hukuki sorunuzu buraya yazın..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
