@@ -14,6 +14,38 @@ def main():
     st.markdown("docs/ klasöründeki belgelere göre hukuk ile ilgili sorularınızı yanıtlayan RAG asistanı.")
     
     with st.sidebar:
+        st.header("📄 Belge Yükle")
+        uploaded_files = st.file_uploader("Kendi belgelerinizi yükleyin (PDF/TXT)", type=["pdf", "txt"], accept_multiple_files=True)
+        if st.button("Belgeleri Sisteme Ekle"):
+            if uploaded_files:
+                import os
+                from pathlib import Path
+                
+                # Modellerin yüklendiğinden emin ol
+                retriever, _ = load_models()
+                
+                with st.spinner("Belgeler işleniyor ve sisteme ekleniyor... (Biraz sürebilir)"):
+                    os.makedirs("docs", exist_ok=True)
+                    saved_paths = []
+                    for uf in uploaded_files:
+                        file_path = os.path.join("docs", uf.name)
+                        with open(file_path, "wb") as f:
+                            f.write(uf.getbuffer())
+                        saved_paths.append(Path(file_path))
+                        
+                    try:
+                        num_chunks = retriever.add_documents(saved_paths)
+                        if num_chunks > 0:
+                            st.success(f"Başarılı! {len(saved_paths)} belge işlendi ve {num_chunks} yeni parça veritabanına eklendi.")
+                        else:
+                            st.info("Bu belgeler zaten tamamen veritabanında mevcut.")
+                    except Exception as e:
+                        st.error(f"Belgeler eklenirken hata oluştu: {str(e)}")
+            else:
+                st.warning("Lütfen önce bir belge seçin.")
+                
+        st.markdown("---")
+        
         st.header("⚙️ Ayarlar")
         pool = st.slider("Reranker Pool (Havuz) Boyutu", min_value=5, max_value=200, value=20, step=5,
                          help="Retrieval aşamasında ilk getirilecek ve daha sonra reranker modelinden geçirilecek belge havuzunun boyutunu belirler.")

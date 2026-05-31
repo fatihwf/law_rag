@@ -114,6 +114,8 @@ class OptimizedHybridRetriever:
         if not all_docs:
             log.warning("Veritabaninda belge yok! Lutfen docs/ klasorune dosya koyup ingest.py calistirin.")
             all_docs = ["dummy text"] # Prevent crash if empty
+            all_ids = ["dummy_id"]
+            all_metas = [{"doc_id": "dummy"}]
             
         self._all_ids   = all_ids
         self._all_docs  = all_docs
@@ -130,7 +132,7 @@ class OptimizedHybridRetriever:
             query_embeddings=q_emb, n_results=top_n,
             include=["documents", "metadatas", "distances"],
         )
-        if not res["ids"][0]: return []
+        if not res["ids"] or not res["ids"][0]: return []
         
         return [{
             "chunk_id":    cid,
@@ -206,6 +208,83 @@ class OptimizedHybridRetriever:
             "fusion_score": round(h.get("fusion_score", 0.0), 6),
             "rerank_score": round(h.get("rerank_score", 0.0), 4) if rerank else None,
         } for h in fused[:top_k]]
+
+    def add_documents(self, file_paths: list[Path]) -> int:
+        import hashlib
+        try:
+            import fitz
+        except ImportError:
+            fitz = None
+
+        def get_md5(text: str) -> str:
+            return hashlib.md5(text.encode('utf-8', errors='ignore')).hexdigest()
+
+        def chunk_text(text: str, chunk_size: int, overlap: int) -> list[str]:
+            words = text.split()
+            chunks = []
+            i = 0
+            while i < len(words):
+                chunk = " ".join(words[i:i + chunk_size])
+                if chunk.strip():
+                    chunks.append(chunk)
+                i += (chunk_size - overlap)
+            return chunks
+
+        def extract_text_from_pdf(pdf_path: str) -> str:
+            if not fitz: return ""
+            text = ""
+            with fitz.open(pdf_path) as doc:
+                for page in doc:
+                    text += page.get_text() + "\n"
+            return text
+
+        def extract_text_from_txt(txt_path: str) -> str:
+            with open(txt_path, "r", encoding="utf-8") as f:
+                return f.read()
+            return ""
+
+        CHUNK_SIZE = 400
+        CHUNK_OVERLAP = 50
+
+        existing_ids = set()
+        total_docs = self.collection.count()
+        if total_docs > 0:
+            res = self.collection.get(include=[])
+            existing_ids = set(res["ids"])
+
+        new_chunks = []
+        new_metadatas = []
+        new_ids = []
+
+        for file_path in file_paths:
+            if file_path.suffix.lower() == ".pdf":
+                text = extract_text_from_pdf(str(file_path))
+            else:
+                text = extract_text_from_txt(str(file_path))
+            
+            if not text.strip(): continue
+            chunks = chunk_text(text, CHUNK_SIZE, CHUNK_OVERLAP)
+            for i, chunk in enumerate(chunks):
+                chunk_hash = get_md5(chunk)
+                doc_id = f"{file_path.name}_{i}_{chunk_hash[:8]}"
+                if doc_id not in existing_ids:
+                    new_chunks.append(chunk)
+                    new_ids.append(doc_id)
+                    new_metadatas.append({"doc_id": file_path.name, "chunk_index": i})
+                    
+        if new_chunks:
+            log.info(f"{len(new_chunks)} yeni chunk bulundu. Vektorler hesaplaniyor...")
+            embeddings = self.embedder.encode(new_chunks, show_progress_bar=True).tolist()
+            self.collection.add(
+                ids=new_ids,
+                documents=new_chunks,
+                embeddings=embeddings,
+                metadatas=new_metadatas
+            )
+            log.info("Veritabanina kaydedildi. BM25 guncelleniyor...")
+            self._load_bm25()
+            return len(new_chunks)
+        return 0
 
 
 class GemmaGenerator:
