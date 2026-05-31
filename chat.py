@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-try:
-    import unsloth  # noqa: F401
-except ImportError:
-    pass
+import gc
+import torch
+
+def clear_gpu_memory():
+    """GPU belleğini zorla boşaltır."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    try:
+        log.info("🧹 GPU Belleği Temizlendi!")
+    except:
+        print("🧹 GPU Belleği Temizlendi!")
 
 import argparse
 import io
@@ -19,7 +28,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 
 os.environ["TRANSFORMERS_OFFLINE"]   = "1"
 os.environ["HF_DATASETS_OFFLINE"]    = "1"
-os.environ["HF_HUB_OFFLINE"]         = "1"
+os.environ["HF_HUB_OFFLINE"]         = "0"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 warnings.filterwarnings("ignore")
@@ -46,7 +55,7 @@ ADAPTER_PATH        = Path("models/finetuned_gemma4-e2b")
 
 EMBED_MODEL_NAME    = "BAAI/bge-m3"
 RERANKER_MODEL_NAME = "Qwen/Qwen3-Reranker-0.6B"
-DEVICE              = "cuda"
+DEVICE              = "cpu"  # Sohbet sirasinda VRAM harcamamak icin varsayilan olarak CPU
 
 # OPTIMIZED PARAMETERS
 DEFAULT_TOP_K       = 5
@@ -57,7 +66,8 @@ MAX_NEW_TOKENS      = 1024
 CONTEXT_MAX_CHARS   = 48000
 
 class OptimizedHybridRetriever:
-    def __init__(self):
+    def __init__(self, is_testing: bool = False):
+        self.is_testing = is_testing
         import torch
         import chromadb
         from chromadb.config import Settings
@@ -92,6 +102,12 @@ class OptimizedHybridRetriever:
             device=self._device,
             local_files_only=False, # Set to false if missing local weights
         )
+        
+        # Qwen modellerinde batch processing sirasinda pad_token hatasini onlemek icin:
+        if self.reranker.tokenizer.pad_token_id is None:
+            self.reranker.tokenizer.pad_token = self.reranker.tokenizer.eos_token or "<|endoftext|>"
+            self.reranker.tokenizer.pad_token_id = self.reranker.tokenizer.eos_token_id or 151643
+            
         log.info("OptimizedHybridRetriever hazır [OK]")
 
     def _tokenize(self, text: str) -> list[str]:
@@ -196,7 +212,9 @@ class OptimizedHybridRetriever:
         )[:pool]
 
         if rerank and fused:
-            scores = self.reranker.predict([(query, c["text"]) for c in fused])
+            # Test modundaysa (zayif PC) batch_size=1 ile bellek korunur, guclu PC'de 32 ile hizlanir.
+            eval_batch_size = 1 if self.is_testing else 32
+            scores = self.reranker.predict([(query, c["text"]) for c in fused], batch_size=eval_batch_size)
             for h, sc in zip(fused, scores):
                 h["rerank_score"] = float(sc)
             fused.sort(key=lambda x: x["rerank_score"], reverse=True)
@@ -274,7 +292,16 @@ class OptimizedHybridRetriever:
                     
         if new_chunks:
             log.info(f"{len(new_chunks)} yeni chunk bulundu. Vektorler hesaplaniyor...")
+            import torch
+            if torch.cuda.is_available():
+                self.embedder.to("cuda")
+                
             embeddings = self.embedder.encode(new_chunks, show_progress_bar=True).tolist()
+            
+            if torch.cuda.is_available():
+                self.embedder.to("cpu")
+                clear_gpu_memory()
+                
             self.collection.add(
                 ids=new_ids,
                 documents=new_chunks,
@@ -287,6 +314,42 @@ class OptimizedHybridRetriever:
         return 0
 
 
+class OllamaGenerator:
+    SYSTEM_PROMPT = (
+        "Sen bir uzman asistansın. Sana verilen belge parçalarını "
+        "dikkatlice inceleyerek SADECE sorulan soruyu yanıtla. "
+        "Kesinlikle 'Verilen metin şununla ilgilidir' gibi özetler yapma, doğrudan cevaba gir. "
+        "Yalnızca verilen bağlama dayanarak kısa ve net cevap ver."
+    )
+
+    def __init__(self):
+        log.info("OllamaGenerator hazir (qwen2.5 kullanilacak) [OK]")
+
+    def generate_stream(self, question: str, context_chunks: list[dict], max_new_tokens: int = MAX_NEW_TOKENS):
+        import ollama
+        ctx_texts = []
+        total_len = 0
+        for c in context_chunks:
+            txt = f"[Belge: {c['doc_id']}]\n{c['text']}"
+            if total_len + len(txt) > CONTEXT_MAX_CHARS: break
+            ctx_texts.append(txt)
+            total_len += len(txt)
+
+        context_str = "\n\n---\n\n".join(ctx_texts)
+        user_prompt = f"Bağlam:\n{context_str}\n\nSoru: {question}"
+
+        messages = [
+            {"role": "system", "content": self.SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ]
+
+        return ollama.chat(
+            model="qwen2.5",
+            messages=messages,
+            stream=True
+        )
+
+
 class GemmaGenerator:
     SYSTEM_PROMPT = (
         "Sen bir uzman asistansın. Sana verilen belge parçalarını "
@@ -296,8 +359,11 @@ class GemmaGenerator:
     )
 
     def __init__(self, use_adapter: bool = False):
-        from unsloth import FastModel
-        import json
+        try:
+            from unsloth import FastModel
+        except ImportError:
+            log.error("unsloth yuklu degil! Gemma modelini calistirmak icin güçlü bir bilgisayarda unsloth (ve bagimliliklarini) kurmalisiniz.")
+            raise
 
         if use_adapter and ADAPTER_PATH.exists():
             log.info("Gemma-4-E2B + LoRA yükleniyor...")
@@ -315,8 +381,11 @@ class GemmaGenerator:
         FastModel.for_inference(self.model)
         log.info("GemmaGenerator hazir [OK]")
 
-    def generate(self, question: str, context_chunks: list[dict], max_new_tokens: int = MAX_NEW_TOKENS) -> str:
+    def generate_stream(self, question: str, context_chunks: list[dict], max_new_tokens: int = MAX_NEW_TOKENS):
+        """OllamaGenerator ile ayni ciktilari ureten, stream destekli Gemma ureteci."""
         import torch
+        from transformers import TextIteratorStreamer
+        from threading import Thread
         
         ctx_texts = []
         total_len = 0
@@ -335,17 +404,23 @@ class GemmaGenerator:
             messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
         ).to(self.model.device)
 
-        with torch.no_grad():
-            outputs = self.model.generate(
-                input_ids=inputs,
-                max_new_tokens=max_new_tokens,
-                use_cache=True,
-                temperature=0.0,
-                do_sample=False,
-            )
-
-        gen_tokens = outputs[0][inputs.shape[1]:]
-        return self.tokenizer.decode(gen_tokens, skip_special_tokens=True).strip()
+        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+        
+        generation_kwargs = dict(
+            input_ids=inputs,
+            streamer=streamer,
+            max_new_tokens=max_new_tokens,
+            use_cache=True,
+            temperature=0.0,
+            do_sample=False,
+        )
+        
+        thread = Thread(target=self.model.generate, kwargs=generation_kwargs)
+        thread.start()
+        
+        for text in streamer:
+            # app.py'de degisiklik yapmamak icin Ollama formatinda donduruyoruz
+            yield {"message": {"content": text}}
 
 
 def interactive_loop():
@@ -354,8 +429,8 @@ def interactive_loop():
     print("Veritabani: docs/ klasorundeki belgeler")
     print("="*60)
     
-    retriever = OptimizedHybridRetriever()
-    generator = GemmaGenerator(use_adapter=True)
+    retriever = OptimizedHybridRetriever(is_testing=True)
+    generator = OllamaGenerator()
     
     print("\nSistem Hazir! Soru sorabilirsiniz (Cikmak icin 'q' veya 'exit').")
     
@@ -373,11 +448,14 @@ def interactive_loop():
                 continue
                 
             print(f"  {len(chunks)} alakali metin bulundu. Yanit uretiliyor...\n")
-            answer = generator.generate(q, chunks)
+            stream = generator.generate_stream(q, chunks)
             
             print("="*60)
             print("YANIT:")
-            print(answer)
+            for chunk in stream:
+                if 'message' in chunk and 'content' in chunk['message']:
+                    print(chunk['message']['content'], end="", flush=True)
+            print()
             print("="*60)
             print("KAYNAKLAR:")
             for i, c in enumerate(chunks, 1):
@@ -394,12 +472,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.query:
-        retriever = OptimizedHybridRetriever()
-        generator = GemmaGenerator(use_adapter=True)
+        retriever = OptimizedHybridRetriever(is_testing=True)
+        generator = OllamaGenerator()
         chunks = retriever.search(args.query)
         if chunks:
-            ans = generator.generate(args.query, chunks)
-            print("\nYANIT:\n", ans)
+            print("\nYANIT:\n")
+            stream = generator.generate_stream(args.query, chunks)
+            for chunk in stream:
+                if 'message' in chunk and 'content' in chunk['message']:
+                    print(chunk['message']['content'], end="", flush=True)
+            print()
         else:
             print("Veritabaninda belge yok.")
     else:

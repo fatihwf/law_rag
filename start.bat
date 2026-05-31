@@ -5,7 +5,7 @@ color 0A
 echo ========================================================
 echo [1/3] Kutuphaneler kontrol ediliyor...
 echo ========================================================
-python -m pip install -r requirements.txt --quiet
+pip install -r requirements.txt --quiet
 echo Kutuphaneler hazir!
 
 echo.
@@ -19,5 +19,6 @@ echo.
 echo ========================================================
 echo [3/3] Sohbet arayuzu baslatiliyor...
 echo ========================================================
-python -m streamlit run app.py
+python chat.py
+
 pause

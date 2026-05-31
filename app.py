@@ -1,12 +1,20 @@
 import streamlit as st
-from chat import OptimizedHybridRetriever, GemmaGenerator
+from chat import OptimizedHybridRetriever, OllamaGenerator, GemmaGenerator, clear_gpu_memory
+
+# ==== AYAR ====
+# Eğer güçlü bir bilgisayara geçerseniz burayı False yapın:
+USE_OLLAMA_FOR_TESTING = True
+# =============
 
 st.set_page_config(page_title="Hukuk RAG Sistemi", page_icon="⚖️", layout="wide")
 
 @st.cache_resource
 def load_models():
-    retriever = OptimizedHybridRetriever()
-    generator = GemmaGenerator(use_adapter=True)
+    retriever = OptimizedHybridRetriever(is_testing=USE_OLLAMA_FOR_TESTING)
+    if USE_OLLAMA_FOR_TESTING:
+        generator = OllamaGenerator()
+    else:
+        generator = GemmaGenerator(use_adapter=True)
     return retriever, generator
 
 def main():
@@ -24,7 +32,7 @@ def main():
                 # Modellerin yüklendiğinden emin ol
                 retriever, _ = load_models()
                 
-                with st.spinner("Belgeler işleniyor ve sisteme ekleniyor... (Biraz sürebilir)"):
+                with st.status("🚀 Belgeler işleniyor ve sisteme ekleniyor... (GPU geçici olarak kullanılacak)", expanded=True) as status:
                     os.makedirs("docs", exist_ok=True)
                     saved_paths = []
                     for uf in uploaded_files:
@@ -36,11 +44,11 @@ def main():
                     try:
                         num_chunks = retriever.add_documents(saved_paths)
                         if num_chunks > 0:
-                            st.success(f"Başarılı! {len(saved_paths)} belge işlendi ve {num_chunks} yeni parça veritabanına eklendi.")
+                            status.update(label=f"✅ Başarılı! {len(saved_paths)} belge işlendi ve {num_chunks} yeni parça eklendi. GPU boşaltıldı.", state="complete", expanded=False)
                         else:
-                            st.info("Bu belgeler zaten tamamen veritabanında mevcut.")
+                            status.update(label="Bilgi: Bu belgeler zaten tamamen veritabanında mevcut.", state="complete", expanded=False)
                     except Exception as e:
-                        st.error(f"Belgeler eklenirken hata oluştu: {str(e)}")
+                        status.update(label=f"❌ Hata: {str(e)}", state="error", expanded=True)
             else:
                 st.warning("Lütfen önce bir belge seçin.")
                 
@@ -80,17 +88,25 @@ def main():
                 try:
                     chunks = retriever.search(prompt, top_k=top_k, pool=pool)
                     if chunks:
-                        answer = generator.generate(prompt, chunks)
+                        # Streaming ile yanıt göster
+                        response_placeholder = st.empty()
+                        full_response = ""
+                        stream = generator.generate_stream(prompt, chunks)
                         
-                        # Sonuçları göster
-                        st.markdown(answer)
+                        for chunk in stream:
+                            if 'message' in chunk and 'content' in chunk['message']:
+                                full_response += chunk['message']['content']
+                                response_placeholder.markdown(full_response + "▌")
+                                
+                        response_placeholder.markdown(full_response)
                         
                         with st.expander("📚 Kaynaklar & Alakalı Metinler"):
                             for i, c in enumerate(chunks, 1):
                                 st.markdown(f"**[{i}] Belge:** {c['doc_id']} | **İlgi Skoru (Rerank):** {c['rerank_score']:.3f}")
                                 st.caption(c['text'][:500] + "..." if len(c['text']) > 500 else c['text'])
                         
-                        st.session_state.messages.append({"role": "assistant", "content": answer})
+                        st.session_state.messages.append({"role": "assistant", "content": full_response})
+                        clear_gpu_memory()  # İşlem sonu güvenliği
                     else:
                         st.warning("Eşleşen belge bulunamadı. Lütfen docs/ klasörüne belge ekleyip ingest işlemini çalıştırın.")
                         st.session_state.messages.append({"role": "assistant", "content": "Eşleşen belge bulunamadı."})
